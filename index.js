@@ -1,123 +1,133 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const Discord = require('discord.js');
 const axios = require('axios');
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+const dotenv = require('dotenv');
+const { v4: uuidv4 } = require('uuid');
 
-// Hardcode your credentials here
-const DISCORD_TOKEN = 'your_discord_bot_token';
-const PTERODACTYL_API_KEY = 'your_pterodactyl_api_key';
-const PTERODACTYL_URL = 'https://your.pterodactyl.url';
+dotenv.config();
+
+const client = new Discord.Client();
+const PREFIX = '!';
 
 client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}!`);
+    console.log('Bot is online!');
 });
 
-// Helper function to get available nodes and allocations
-async function getAvailableAllocations() {
-  try {
-    const nodesResponse = await axios.get(`${PTERODACTYL_URL}/api/application/nodes`, {
-      headers: {
-        'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
+client.on('message', async message => {
+    if (message.author.bot) return;
+    if (!message.content.startsWith(PREFIX)) return;
 
-    const nodes = nodesResponse.data.data;
-    for (const node of nodes) {
-      const allocationsResponse = await axios.get(`${PTERODACTYL_URL}/api/application/nodes/${node.attributes.id}/allocations`, {
-        headers: {
-          'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        }
-      });
+    const [command, ...args] = message.content.slice(PREFIX.length).split(' ');
 
-      const allocations = allocationsResponse.data.data;
-      for (const allocation of allocations) {
-        if (!allocation.attributes.assigned) {
-          return allocation.attributes.id;
-        }
-      }
+    if (command === 'register') {
+        await registerUser(message);
+    } else if (command === 'servercreate') {
+        await createServer(message, args);
+    } else if (command === 'nodes') {
+        await displayNodes(message);
     }
+});
 
-    return null; // No available allocations found
-  } catch (error) {
-    console.error('Error fetching allocations:', error);
-    return null;
-  }
+async function registerUser(message) {
+    try {
+        const authorName = message.author.username;
+        
+        // Ask for email
+        const emailPrompt = await message.author.send('Please enter your email:');
+        const emailResponse = await emailPrompt.channel.awaitMessages(m => m.author.id === message.author.id, { max: 1, time: 60000, errors: ['time'] });
+        const email = emailResponse.first().content.trim();
+
+        // Ask for name
+        const namePrompt = await message.author.send('Please enter your name:');
+        const nameResponse = await namePrompt.channel.awaitMessages(m => m.author.id === message.author.id, { max: 1, time: 60000, errors: ['time'] });
+        const name = nameResponse.first().content.trim();
+
+        // Generate a random password for Pterodactyl
+        const panelPassword = generateRandomPassword();
+
+        // Send panel password to user via DM
+        await message.author.send(`Your Pterodactyl panel password: ${panelPassword}`);
+
+        // Create a channel with the user's name
+        const guild = message.guild;
+        const channel = await guild.channels.create(`${authorName}-${name}`, {
+            type: 'text',
+            parent: process.env.CATEGORY_ID, // Replace with your category ID
+            permissionOverwrites: [
+                {
+                    id: message.author.id,
+                    allow: ['VIEW_CHANNEL']
+                },
+                {
+                    id: client.user.id,
+                    allow: ['VIEW_CHANNEL']
+                }
+            ]
+        });
+
+        await channel.send(`Welcome ${authorName}!`);
+        await channel.send(`Email: ${email}\nName: ${name}`);
+
+        // Add user to the channel
+        await channel.updateOverwrite(message.author, {
+            VIEW_CHANNEL: true
+        });
+
+        await message.reply(`Registration successful! Check your DMs for further instructions.`);
+    } catch (err) {
+        console.error('Error during registration:', err);
+        message.reply('Registration failed. Please try again later.');
+    }
 }
 
-client.on('messageCreate', async (message) => {
-  if (message.content.startsWith('!nserver create')) {
-    const allocationId = await getAvailableAllocations();
-    if (!allocationId) {
-      message.channel.send('No available allocations found.');
-      return;
-    }
-
+async function createServer(message, args) {
     try {
-      const response = await axios.post(`${PTERODACTYL_URL}/api/application/servers`, {
-        name: "My New Server",
-        user: 1, // The user ID for the server owner
-        egg: 1, // The egg ID for the server
-        docker_image: "quay.io/pterodactyl/core:java", // The Docker image to use
-        startup: "java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}",
-        environment: {
-          SERVER_JARFILE: "server.jar",
-          SERVER_MEMORY: "512M"
-        },
-        limits: {
-          memory: 512, // Memory limit in MB
-          swap: 0, // Swap limit in MB
-          disk: 1024, // Disk space limit in MB
-          io: 500, // Block IO weight (10-1000)
-          cpu: 100 // CPU limit in percentage
-        },
-        feature_limits: {
-          databases: 1, // Number of databases allowed
-          allocations: 1 // Number of allocations allowed
-        },
-        allocation: {
-          default: allocationId // Use the dynamically chosen allocation ID
-        }
-      }, {
-        headers: {
-          'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        }
-      });
+        const [serverName, node] = args;
+        
+        // Make sure the user is registered (you can implement this check if needed)
 
-      message.channel.send(`Server created! ID: ${response.data.attributes.identifier}`);
-    } catch (error) {
-      console.error(error);
-      message.channel.send('Failed to create server.');
+        // Generate a random password for the server
+        const serverPassword = generateRandomPassword();
+
+        // Example Pterodactyl API request to create a server
+        const response = await axios.post(`${process.env.PTERO_API_URL}/servers`, {
+            name: serverName,
+            node: node,
+            // Add more parameters as per your API's requirements
+        }, {
+            headers: {
+                Authorization: `Bearer ${process.env.PTERO_API_TOKEN}`,
+                'Content-Type': 'application/json',
+            }
+        });
+
+        // Handle response and notify the user accordingly
+        await message.reply(`Server created successfully with name ${serverName} on node ${node}.`);
+    } catch (err) {
+        console.error('Error creating server:', err);
+        message.reply('Failed to create server. Please try again later.');
     }
-  }
+}
 
-  if (message.content.startsWith('!naccount create')) {
-    const args = message.content.split(' ').slice(1);
-    const [name, email, password] = args;
-
+async function displayNodes(message) {
     try {
-      const response = await axios.post(`${PTERODACTYL_URL}/api/application/users`, {
-        username: name,
-        email: email,
-        password: password
-      }, {
-        headers: {
-          'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        }
-      });
+        // Fetch and display available nodes from Pterodactyl panel
+        const response = await axios.get(`${process.env.PTERO_API_URL}/nodes`, {
+            headers: {
+                Authorization: `Bearer ${process.env.PTERO_API_TOKEN}`
+            }
+        });
 
-      message.channel.send(`Account created! Username: ${name}, Email: ${email}`);
-    } catch (error) {
-      console.error(error);
-      message.channel.send('Failed to create account.');
+        const nodes = response.data.nodes.map(node => node.name).join(', ');
+        await message.channel.send(`Available nodes: ${nodes}`);
+    } catch (err) {
+        console.error('Error fetching nodes:', err);
+        message.reply('Failed to fetch nodes. Please try again later.');
     }
-  }
-});
+}
 
-client.login(DISCORD_TOKEN);
+function generateRandomPassword() {
+    // Generate a random alphanumeric password
+    return uuidv4().replace(/-/g, '').slice(0, 12);
+}
+
+client.login(process.env.DISCORD_BOT_TOKEN);
